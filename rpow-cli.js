@@ -59,6 +59,7 @@ const COLORS = {
   green: "\x1b[32m",
   yellow: "\x1b[33m",
   cyan: "\x1b[36m",
+  magenta: "\x1b[35m",
 };
 
 //
@@ -66,6 +67,67 @@ const COLORS = {
 // HELPERS
 // ==========================================
 //
+
+function sleep(ms) {
+  return new Promise(
+    (resolve) =>
+      setTimeout(resolve, ms)
+  );
+}
+
+function line() {
+  console.log(
+    COLORS.cyan +
+      "════════════════════════════════════════════════════" +
+      COLORS.reset
+  );
+}
+
+function banner(workers, target) {
+  console.clear();
+
+  line();
+
+  console.log(
+    COLORS.green +
+      "              RPOW3 NATIVE MINER" +
+      COLORS.reset
+  );
+
+  line();
+
+  console.log(
+    `Site      : ${DEFAULT_SITE_ORIGIN}`
+  );
+
+  console.log(
+    `API       : ${DEFAULT_API_ORIGIN}`
+  );
+
+  console.log(
+    `Workers   : ${workers}`
+  );
+
+  console.log(
+    `Target    : ${target}`
+  );
+
+  console.log(
+    `Engine    : native`
+  );
+
+  line();
+}
+
+function shortHash(hash) {
+  if (!hash) return "-";
+
+  return (
+    hash.slice(0, 12) +
+    "..." +
+    hash.slice(-6)
+  );
+}
 
 function parseArgs(argv) {
   const out = { _: [] };
@@ -268,63 +330,79 @@ class RpowClient {
       );
     }
 
-    const res = await fetch(
-      url,
-      {
-        method,
-        headers,
-        body: payload,
-        redirect:
-          options.redirect ||
-          "manual",
-      }
-    );
+    const controller =
+      new AbortController();
 
-    storeSetCookies(
-      this.state,
-      res.headers
-    );
-
-    this.save();
-
-    const text =
-      await res.text();
-
-    let parsed;
+    const timeout =
+      setTimeout(() => {
+        controller.abort();
+      }, 30000);
 
     try {
-      parsed = JSON.parse(
-        text
-      );
-    } catch {
-      parsed = text;
-    }
-
-    if (
-      !res.ok &&
-      ![
-        301,
-        302,
-        303,
-        307,
-        308,
-      ].includes(res.status)
-    ) {
-      const err = new Error(
-        parsed?.message ||
-          `HTTP ${res.status}`
+      const res = await fetch(
+        url,
+        {
+          method,
+          headers,
+          body: payload,
+          redirect:
+            options.redirect ||
+            "manual",
+          signal:
+            controller.signal,
+        }
       );
 
-      err.status =
-        res.status;
+      storeSetCookies(
+        this.state,
+        res.headers
+      );
 
-      throw err;
+      this.save();
+
+      const text =
+        await res.text();
+
+      let parsed;
+
+      try {
+        parsed = JSON.parse(
+          text
+        );
+      } catch {
+        parsed = text;
+      }
+
+      if (
+        !res.ok &&
+        ![
+          301,
+          302,
+          303,
+          307,
+          308,
+        ].includes(res.status)
+      ) {
+        const err = new Error(
+          parsed?.message ||
+            text ||
+            `HTTP ${res.status}`
+        );
+
+        err.status =
+          res.status;
+
+        throw err;
+      }
+
+      return {
+        res,
+        data: parsed,
+      };
+
+    } finally {
+      clearTimeout(timeout);
     }
-
-    return {
-      res,
-      data: parsed,
-    };
   }
 
   async api(
@@ -495,17 +573,6 @@ function mineSolutionNative(
 
             if (
               msg.type ===
-              "progress"
-            ) {
-              log(
-                "info",
-                "mining",
-                msg
-              );
-            }
-
-            if (
-              msg.type ===
               "found"
             ) {
               resolve({
@@ -604,50 +671,6 @@ async function main() {
     });
 
   //
-  // MAP
-  //
-
-  if (
-    command === "map"
-  ) {
-    console.log(
-      "SITE:",
-      DEFAULT_SITE_ORIGIN
-    );
-
-    console.log(
-      "API:",
-      DEFAULT_API_ORIGIN
-    );
-
-    console.log(
-      "\nEndpoints:"
-    );
-
-    console.log(
-      "POST /auth/request"
-    );
-
-    console.log(
-      "GET /auth/verify"
-    );
-
-    console.log(
-      "GET /me"
-    );
-
-    console.log(
-      "POST /challenge"
-    );
-
-    console.log(
-      "POST /mint"
-    );
-
-    return;
-  }
-
-  //
   // LOGIN
   //
 
@@ -715,54 +738,6 @@ async function main() {
   }
 
   //
-  // ME
-  //
-
-  if (
-    command === "me"
-  ) {
-    const me =
-      await client.api(
-        "GET",
-        "/me"
-      );
-
-    log(
-      "info",
-      "me",
-      me
-    );
-
-    return;
-  }
-
-  //
-  // LOGOUT
-  //
-
-  if (
-    command ===
-    "logout"
-  ) {
-    await client.api(
-      "POST",
-      "/auth/logout"
-    );
-
-    client.state.cookies =
-      {};
-
-    client.save();
-
-    log(
-      "success",
-      "logged out"
-    );
-
-    return;
-  }
-
-  //
   // MINE
   //
 
@@ -791,59 +766,289 @@ async function main() {
 
     let minted = 0;
 
-    await client.api(
-      "GET",
-      "/me"
+    banner(
+      workers,
+      target
     );
+
+    //
+    // LOGIN CHECK
+    //
+
+    let me;
+
+    while (true) {
+      try {
+
+        me =
+          await client.api(
+            "GET",
+            "/me"
+          );
+
+        break;
+
+      } catch (err) {
+
+        log(
+          "warn",
+          "login check failed retrying",
+          {
+            error:
+              err.message,
+            status:
+              err.status,
+          }
+        );
+
+        await sleep(5000);
+      }
+    }
+
+    console.log(
+      COLORS.green +
+        `Logged in : ${
+          me.email ||
+          "unknown"
+        }` +
+        COLORS.reset
+    );
+
+    console.log(
+      COLORS.yellow +
+        `Balance   : ${
+          me.balance || 0
+        }` +
+        COLORS.reset
+    );
+
+    line();
+
+    //
+    // MAIN LOOP
+    //
 
     while (
       minted < target
     ) {
-      const challenge =
-        await client.api(
-          "POST",
-          "/challenge"
-        );
 
-      log(
-        "info",
-        "challenge",
-        challenge
+      //
+      // GET CHALLENGE
+      //
+
+      let challenge;
+
+      while (true) {
+        try {
+
+          challenge =
+            await client.api(
+              "POST",
+              "/challenge"
+            );
+
+          break;
+
+        } catch (err) {
+
+          log(
+            "warn",
+            "challenge failed retrying",
+            {
+              error:
+                err.message,
+              status:
+                err.status,
+            }
+          );
+
+          await sleep(5000);
+        }
+      }
+
+      console.log(
+        COLORS.cyan +
+          `Challenge : ${challenge.challenge_id}` +
+          COLORS.reset
       );
 
-      const solution =
-        await mineSolutionNative(
-          challenge,
-          workers,
-          logEveryMs
-        );
-
-      log(
-        "success",
-        "solution found",
-        solution
+      console.log(
+        COLORS.cyan +
+          `Difficulty: ${challenge.difficulty_bits} bits` +
+          COLORS.reset
       );
 
-      const result =
-        await client.api(
-          "POST",
-          "/mint",
-          {
-            challenge_id:
-              challenge.challenge_id,
+      //
+      // MINE
+      //
 
-            solution_nonce:
-              solution.solution_nonce,
+      const startedAt =
+        Date.now();
+
+      let solution;
+
+      while (true) {
+        try {
+
+          solution =
+            await mineSolutionNative(
+              challenge,
+              workers,
+              logEveryMs
+            );
+
+          break;
+
+        } catch (err) {
+
+          log(
+            "warn",
+            "miner failed retrying",
+            {
+              error:
+                err.message,
+            }
+          );
+
+          await sleep(3000);
+        }
+      }
+
+      const elapsed = (
+        (Date.now() -
+          startedAt) /
+        1000
+      ).toFixed(2);
+
+      console.log(
+        COLORS.green +
+          "\n✓ SOLUTION FOUND" +
+          COLORS.reset
+      );
+
+      console.log(
+        `Nonce     : ${solution.solution_nonce}`
+      );
+
+      console.log(
+        `Hash      : ${shortHash(solution.digest)}`
+      );
+
+      console.log(
+        `Time      : ${elapsed}s`
+      );
+
+      //
+      // MINT
+      //
+
+      while (true) {
+        try {
+
+          await client.api(
+            "POST",
+            "/mint",
+            {
+              challenge_id:
+                challenge.challenge_id,
+
+              solution_nonce:
+                solution.solution_nonce,
+            }
+          );
+
+          minted++;
+
+          console.log(
+            COLORS.green +
+              "✓ Mint success" +
+              COLORS.reset
+          );
+
+          //
+          // REFRESH BALANCE
+          //
+
+          try {
+
+            me =
+              await client.api(
+                "GET",
+                "/me"
+              );
+
+            console.log(
+              COLORS.yellow +
+                `Updated Balance : ${me.balance}` +
+                COLORS.reset
+            );
+
+          } catch {
+
+            console.log(
+              "Balance refresh failed"
+            );
           }
-        );
 
-      minted++;
+          console.log(
+            COLORS.magenta +
+              `Minted    : ${minted}` +
+              COLORS.reset
+          );
 
-      log(
-        "success",
-        "mint success",
-        result
-      );
+          line();
+
+          break;
+
+        } catch (err) {
+
+          log(
+            "warn",
+            "mint failed retrying",
+            {
+              error:
+                err.message,
+              status:
+                err.status,
+            }
+          );
+
+          if (
+            String(
+              err.message
+            )
+              .toLowerCase()
+              .includes(
+                "expired"
+              )
+          ) {
+
+            log(
+              "warn",
+              "challenge expired requesting new one"
+            );
+
+            break;
+          }
+
+          if (
+            err.status ===
+            401
+          ) {
+
+            log(
+              "error",
+              "session expired login again"
+            );
+
+            process.exit(1);
+          }
+
+          await sleep(5000);
+        }
+      }
+
+      await sleep(1000);
     }
 
     log(
@@ -864,17 +1069,11 @@ async function main() {
   console.log(`
 Usage:
 
-node rpow-cli.js map
-
 node rpow-cli.js login --email you@example.com
 
 node rpow-cli.js complete-login --link "https://..."
 
-node rpow-cli.js me
-
-node rpow-cli.js mine --count 1
-
-node rpow-cli.js logout
+node rpow-cli.js mine --count 999999999 --workers $(nproc)
 `);
 }
 
