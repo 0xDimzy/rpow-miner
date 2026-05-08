@@ -16,8 +16,9 @@ fi
   -march=native \
   -pthread \
   rpow-native-miner.c \
-  -o rpow-native-miner
-
+  -o rpow-native-miner \
+  -lcrypto
+  
 chmod +x rpow-native-miner
 
 echo "Built ./rpow-native-miner"
