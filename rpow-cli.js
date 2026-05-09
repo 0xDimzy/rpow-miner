@@ -14,15 +14,18 @@ const { spawn } = require("child_process");
 //
 
 const DEFAULT_SITE_ORIGIN =
-  "https://rpow3.com";
+  "https://rpow2.com";
 
 const DEFAULT_API_ORIGIN =
-  "https://api.rpow3.com";
+  "https://api.rpow2.com";
 
 const DEFAULT_STATE = path.join(
   __dirname,
-  ".rpow3-cli-state.json"
+  ".rpow2-cli-state.json"
 );
+
+const BASE_UNITS =
+  1000000;
 
 const NATIVE_MINER_CANDIDATES =
   process.platform === "win32"
@@ -90,7 +93,7 @@ function banner(workers, target) {
 
   console.log(
     COLORS.green +
-      "              RPOW3 NATIVE MINER" +
+      "              RPOW2 NATIVE MINER" +
       COLORS.reset
   );
 
@@ -129,6 +132,13 @@ function shortHash(hash) {
   );
 }
 
+function formatBalance(baseUnits) {
+  return (
+    Number(baseUnits || 0) /
+    BASE_UNITS
+  ).toFixed(6);
+}
+
 function parseArgs(argv) {
   const out = { _: [] };
 
@@ -158,30 +168,11 @@ function parseArgs(argv) {
   return out;
 }
 
-function log(level, message, data) {
-  const suffix =
-    data === undefined
-      ? ""
-      : ` ${JSON.stringify(data)}`;
-
-  const upper =
-    level.toUpperCase();
-
-  const color =
-    upper === "SUCCESS"
-      ? COLORS.green
-      : upper === "WARN"
-      ? COLORS.yellow
-      : upper === "ERROR"
-      ? COLORS.red
-      : COLORS.cyan;
-
-  console.log(
-    `${new Date().toISOString()} ` +
-      `${color}${upper}${COLORS.reset} ` +
-      `${message}${suffix}`
-  );
-}
+//
+// ==========================================
+// STATE
+// ==========================================
+//
 
 function loadState(file) {
   try {
@@ -305,7 +296,7 @@ class RpowClient {
       referer: `${this.siteOrigin}/`,
 
       "user-agent":
-        "rpow3-cli/1.0",
+        "rpow2-cli/1.0",
     };
 
     const cookies =
@@ -330,79 +321,64 @@ class RpowClient {
       );
     }
 
-    const controller =
-      new AbortController();
+    const res = await fetch(
+      url,
+      {
+        method,
+        headers,
+        body: payload,
+        redirect:
+          options.redirect ||
+          "manual",
+      }
+    );
 
-    const timeout =
-      setTimeout(() => {
-        controller.abort();
-      }, 30000);
+    storeSetCookies(
+      this.state,
+      res.headers
+    );
+
+    this.save();
+
+    const text =
+      await res.text();
+
+    let parsed;
 
     try {
-      const res = await fetch(
-        url,
-        {
-          method,
-          headers,
-          body: payload,
-          redirect:
-            options.redirect ||
-            "manual",
-          signal:
-            controller.signal,
-        }
+      parsed = JSON.parse(
+        text
       );
-
-      storeSetCookies(
-        this.state,
-        res.headers
-      );
-
-      this.save();
-
-      const text =
-        await res.text();
-
-      let parsed;
-
-      try {
-        parsed = JSON.parse(
-          text
-        );
-      } catch {
-        parsed = text;
-      }
-
-      if (
-        !res.ok &&
-        ![
-          301,
-          302,
-          303,
-          307,
-          308,
-        ].includes(res.status)
-      ) {
-        const err = new Error(
-          parsed?.message ||
-            text ||
-            `HTTP ${res.status}`
-        );
-
-        err.status =
-          res.status;
-
-        throw err;
-      }
-
-      return {
-        res,
-        data: parsed,
-      };
-
-    } finally {
-      clearTimeout(timeout);
+    } catch {
+      parsed = text;
     }
+
+    if (
+      !res.ok &&
+      ![
+        301,
+        302,
+        303,
+        307,
+        308,
+      ].includes(res.status)
+    ) {
+      const err = new Error(
+        parsed?.message ||
+          text ||
+          `HTTP ${res.status}`
+      );
+
+      err.status =
+        res.status;
+
+      throw err;
+    }
+
+    return {
+      res,
+      data: parsed,
+    };
   }
 
   async api(
@@ -447,16 +423,6 @@ class RpowClient {
           "location"
         );
 
-      log(
-        "info",
-        "redirect",
-        {
-          status:
-            res.status,
-          location,
-        }
-      );
-
       if (
         ![
           301,
@@ -489,8 +455,7 @@ class RpowClient {
 
 function mineSolutionNative(
   challenge,
-  workerCount,
-  logEveryMs
+  workerCount
 ) {
   const nativeMiner =
     nativeMinerPath();
@@ -517,11 +482,6 @@ function mineSolutionNative(
           "--workers",
           String(
             workerCount
-          ),
-
-          "--progress-ms",
-          String(
-            logEveryMs
           ),
         ]
       );
@@ -691,14 +651,10 @@ async function main() {
       }
     );
 
-    client.state.email =
-      email;
-
-    client.save();
-
-    log(
-      "success",
-      "magic link requested"
+    console.log(
+      COLORS.green +
+        "✓ Magic link sent" +
+        COLORS.reset
     );
 
     return;
@@ -718,21 +674,69 @@ async function main() {
         "magic link: "
       ));
 
-    await client.followMagicLink(
-      link
-    );
+    let success = false;
 
-    const me =
-      await client.api(
-        "GET",
-        "/me"
-      );
+    for (
+      let attempt = 1;
+      attempt <= 5;
+      attempt++
+    ) {
 
-    log(
-      "success",
-      "session active",
-      me
-    );
+      try {
+
+        console.log(
+          COLORS.yellow +
+            `Attempt ${attempt}/5` +
+            COLORS.reset
+        );
+
+        await client.followMagicLink(
+          link
+        );
+
+        const me =
+          await client.api(
+            "GET",
+            "/me"
+          );
+
+        console.log(
+          COLORS.green +
+            "✓ Login success" +
+            COLORS.reset
+        );
+
+        console.log(
+          `Email   : ${me.email}`
+        );
+
+        console.log(
+          `Balance : ${formatBalance(me.balance_base_units)}`
+        );
+
+        success = true;
+
+        break;
+
+      } catch (err) {
+
+        console.log(
+          COLORS.red +
+            `Attempt ${attempt} failed` +
+            COLORS.reset
+        );
+
+        console.log(
+          err.message
+        );
+
+        await sleep(5000);
+      }
+    }
+
+    if (!success) {
+      process.exit(1);
+    }
 
     return;
   }
@@ -742,10 +746,9 @@ async function main() {
   //
 
   if (
-    command ===
-      "mine" ||
-    command === "run"
+    command === "mine"
   ) {
+
     const target =
       Number(
         args.count || 1
@@ -757,13 +760,6 @@ async function main() {
           defaultWorkerCount()
       );
 
-    const logEveryMs =
-      Number(
-        args[
-          "log-every-ms"
-        ] || 1000
-      );
-
     let minted = 0;
 
     banner(
@@ -771,13 +767,10 @@ async function main() {
       target
     );
 
-    //
-    // LOGIN CHECK
-    //
-
     let me;
 
     while (true) {
+
       try {
 
         me =
@@ -788,17 +781,12 @@ async function main() {
 
         break;
 
-      } catch (err) {
+      } catch {
 
-        log(
-          "warn",
-          "login check failed retrying",
-          {
-            error:
-              err.message,
-            status:
-              err.status,
-          }
+        console.log(
+          COLORS.red +
+            "Session invalid retrying..." +
+            COLORS.reset
         );
 
         await sleep(5000);
@@ -807,38 +795,32 @@ async function main() {
 
     console.log(
       COLORS.green +
-        `Logged in : ${
-          me.email ||
-          "unknown"
-        }` +
+        `Logged in : ${me.email}` +
         COLORS.reset
     );
 
     console.log(
       COLORS.yellow +
-        `Balance   : ${
-          me.balance || 0
-        }` +
+        `Balance   : ${formatBalance(me.balance_base_units)} RPOW` +
+        COLORS.reset
+    );
+
+    console.log(
+      COLORS.magenta +
+        `Daily Left: ${formatBalance(me.daily_remaining_base_units)} RPOW` +
         COLORS.reset
     );
 
     line();
 
-    //
-    // MAIN LOOP
-    //
-
     while (
       minted < target
     ) {
 
-      //
-      // GET CHALLENGE
-      //
-
       let challenge;
 
       while (true) {
+
         try {
 
           challenge =
@@ -849,17 +831,12 @@ async function main() {
 
           break;
 
-        } catch (err) {
+        } catch {
 
-          log(
-            "warn",
-            "challenge failed retrying",
-            {
-              error:
-                err.message,
-              status:
-                err.status,
-            }
+          console.log(
+            COLORS.red +
+              "Challenge retrying..." +
+              COLORS.reset
           );
 
           await sleep(5000);
@@ -874,13 +851,9 @@ async function main() {
 
       console.log(
         COLORS.cyan +
-          `Difficulty: ${challenge.difficulty_bits} bits` +
+          `Difficulty: ${challenge.difficulty_bits}` +
           COLORS.reset
       );
-
-      //
-      // MINE
-      //
 
       const startedAt =
         Date.now();
@@ -888,26 +861,23 @@ async function main() {
       let solution;
 
       while (true) {
+
         try {
 
           solution =
             await mineSolutionNative(
               challenge,
-              workers,
-              logEveryMs
+              workers
             );
 
           break;
 
-        } catch (err) {
+        } catch {
 
-          log(
-            "warn",
-            "miner failed retrying",
-            {
-              error:
-                err.message,
-            }
+          console.log(
+            COLORS.red +
+              "Miner retrying..." +
+              COLORS.reset
           );
 
           await sleep(3000);
@@ -927,22 +897,19 @@ async function main() {
       );
 
       console.log(
-        `Nonce     : ${solution.solution_nonce}`
+        `Nonce : ${solution.solution_nonce}`
       );
 
       console.log(
-        `Hash      : ${shortHash(solution.digest)}`
+        `Hash  : ${shortHash(solution.digest)}`
       );
 
       console.log(
-        `Time      : ${elapsed}s`
+        `Time  : ${elapsed}s`
       );
-
-      //
-      // MINT
-      //
 
       while (true) {
+
         try {
 
           await client.api(
@@ -965,10 +932,6 @@ async function main() {
               COLORS.reset
           );
 
-          //
-          // REFRESH BALANCE
-          //
-
           try {
 
             me =
@@ -979,20 +942,28 @@ async function main() {
 
             console.log(
               COLORS.yellow +
-                `Updated Balance : ${me.balance}` +
+                `Updated Balance : ${formatBalance(me.balance_base_units)} RPOW` +
+                COLORS.reset
+            );
+
+            console.log(
+              COLORS.magenta +
+                `Daily Remaining : ${formatBalance(me.daily_remaining_base_units)} RPOW` +
                 COLORS.reset
             );
 
           } catch {
 
             console.log(
-              "Balance refresh failed"
+              COLORS.red +
+                "Balance refresh failed" +
+                COLORS.reset
             );
           }
 
           console.log(
-            COLORS.magenta +
-              `Minted    : ${minted}` +
+            COLORS.cyan +
+              `Minted : ${minted}` +
               COLORS.reset
           );
 
@@ -1000,49 +971,13 @@ async function main() {
 
           break;
 
-        } catch (err) {
+        } catch {
 
-          log(
-            "warn",
-            "mint failed retrying",
-            {
-              error:
-                err.message,
-              status:
-                err.status,
-            }
+          console.log(
+            COLORS.red +
+              "Mint retrying..." +
+              COLORS.reset
           );
-
-          if (
-            String(
-              err.message
-            )
-              .toLowerCase()
-              .includes(
-                "expired"
-              )
-          ) {
-
-            log(
-              "warn",
-              "challenge expired requesting new one"
-            );
-
-            break;
-          }
-
-          if (
-            err.status ===
-            401
-          ) {
-
-            log(
-              "error",
-              "session expired login again"
-            );
-
-            process.exit(1);
-          }
 
           await sleep(5000);
         }
@@ -1050,44 +985,12 @@ async function main() {
 
       await sleep(1000);
     }
-
-    log(
-      "success",
-      "done",
-      {
-        minted,
-      }
-    );
-
-    return;
   }
-
-  //
-  // HELP
-  //
-
-  console.log(`
-Usage:
-
-node rpow-cli.js login --email you@example.com
-
-node rpow-cli.js complete-login --link "https://..."
-
-node rpow-cli.js mine --count 999999999 --workers $(nproc)
-`);
 }
 
 main().catch(
   (err) => {
-    log(
-      "error",
-      err.message,
-      {
-        status:
-          err.status,
-      }
-    );
-
-    process.exitCode = 1;
+    console.error(err);
+    process.exit(1);
   }
 );
