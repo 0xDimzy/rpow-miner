@@ -139,6 +139,28 @@ function formatBalance(baseUnits) {
   ).toFixed(6);
 }
 
+function formatHashrate(hps) {
+
+  if (hps >= 1000000) {
+    return (
+      (hps / 1000000).toFixed(2) +
+      " MH/s"
+    );
+  }
+
+  if (hps >= 1000) {
+    return (
+      (hps / 1000).toFixed(2) +
+      " KH/s"
+    );
+  }
+
+  return (
+    hps.toFixed(2) +
+    " H/s"
+  );
+}
+
 function parseArgs(argv) {
   const out = { _: [] };
 
@@ -890,6 +912,16 @@ async function main() {
         1000
       ).toFixed(2);
 
+      const hashes =
+  Number(
+    solution.hashes ||
+    solution.solution_nonce ||
+    0
+  );
+
+      const hashrate =
+        hashes / elapsed;
+
       console.log(
         COLORS.green +
           "\n✓ SOLUTION FOUND" +
@@ -906,6 +938,14 @@ async function main() {
 
       console.log(
         `Time  : ${elapsed}s`
+      );
+
+      console.log(
+        `Hashes: ${hashes.toLocaleString()}`
+      );
+
+      console.log(
+        `Speed : ${formatHashrate(hashrate)}`
       );
 
       while (true) {
